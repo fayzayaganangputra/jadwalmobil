@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
@@ -19,8 +19,9 @@ interface Booking {
   destination: string;
   status: string;
   user_id: string;
-  user_profile?: { full_name: string }; // user pemesan
-  created_by_profile?: { full_name: string }; // user yang input booking
+  user_profile?: { full_name: string };
+  created_by_profile?: { full_name: string };
+  car?: { name: string; plate_number: string };
 }
 
 interface CalendarViewProps {
@@ -33,7 +34,12 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
   const [currentDate, setCurrentDate] = useState(new Date());
   const [cars, setCars] = useState<Car[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [pendingBookings, setPendingBookings] = useState<Booking[]>([]);
+  const [showPendingModal, setShowPendingModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [highlightedDate, setHighlightedDate] = useState<string | null>(null);
+
+  const calendarRef = useRef<HTMLTableElement | null>(null);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -48,9 +54,36 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
     loadData();
   }, [currentDate]);
 
+  // Realtime listener: update admin ketika ada booking pending baru
+  useEffect(() => {
+    if (profile?.role === 'admin') {
+      const channel = supabase
+        .channel('booking_notifications')
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'bookings' },
+          (payload) => {
+            const newBooking = payload.new;
+            if (newBooking.status === 'pending') {
+              alert(
+                `📅 Booking baru dibuat oleh User ID: ${newBooking.user_id}\nTanggal: ${newBooking.booking_date}`
+              );
+              loadPendingBookings();
+              loadBookings();
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [profile]);
+
   const loadData = async () => {
     setLoading(true);
-    await Promise.all([loadCars(), loadBookings()]);
+    await Promise.all([loadCars(), loadBookings(), loadPendingBookings()]);
     setLoading(false);
   };
 
@@ -61,14 +94,10 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
       .eq('is_active', true)
       .order('name');
 
-    if (error) {
-      console.error('Error loading cars:', error);
-    } else {
-      setCars(data || []);
-    }
+    if (error) console.error('Error loading cars:', error);
+    else setCars(data || []);
   };
 
-  // ✅ fix relasi ambiguous pakai alias user_profile dan created_by_profile
   const loadBookings = async () => {
     const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
     const endDate = `${year}-${String(month + 1).padStart(2, '0')}-${daysInMonth}`;
@@ -78,23 +107,35 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
       .select(`
         *,
         user_profile:user_id(full_name),
-        created_by_profile:created_by(full_name)
+        created_by_profile:created_by(full_name),
+        car:car_id(name, plate_number)
       `)
       .gte('booking_date', startDate)
       .lte('booking_date', endDate)
-      .neq('status', 'cancelled')
-      .neq('status', 'rejected');
+      .not('status', 'in', '("cancelled","rejected")');
 
-    if (error) {
-      console.error('Error loading bookings:', error);
-    } else {
-      setBookings(data || []);
-    }
+    if (error) console.error('Error loading bookings:', error);
+    else setBookings(data || []);
+  };
+
+  const loadPendingBookings = async () => {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select(`
+        *,
+        user_profile:user_id(full_name),
+        car:car_id(name, plate_number)
+      `)
+      .eq('status', 'pending')
+      .order('booking_date', { ascending: true });
+
+    if (error) console.error('Error loading pending bookings:', error);
+    else setPendingBookings(data || []);
   };
 
   const getBookingForCarAndDate = (carId: string, day: number) => {
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    return bookings.filter(b => b.car_id === carId && b.booking_date === dateStr);
+    return bookings.filter((b) => b.car_id === carId && b.booking_date === dateStr);
   };
 
   const previousMonth = () => setCurrentDate(new Date(year, month - 1, 1));
@@ -116,6 +157,22 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
   const isToday = (day: number) => {
     const today = new Date();
     return today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
+  };
+
+  // 🧭 Scroll dan highlight ke tanggal yang diklik dari daftar pending
+  const scrollToDate = (dateStr: string) => {
+    setShowPendingModal(false);
+    setHighlightedDate(dateStr);
+
+    setTimeout(() => {
+      const target = document.getElementById(`cell-${dateStr}`);
+      if (target && calendarRef.current) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      }
+
+      // hilangkan highlight setelah 3 detik
+      setTimeout(() => setHighlightedDate(null), 3000);
+    }, 300);
   };
 
   if (loading) {
@@ -149,20 +206,20 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
         </div>
       </div>
 
-      {/* Tombol tambah mobil untuk admin */}
+      {/* Tombol Pending Booking */}
       {profile?.role === 'admin' && (
-        <div className="flex justify-end mb-4">
+        <div className="flex items-center justify-between mb-4">
           <button
-            onClick={() => alert('Buka modal tambah mobil di sini')}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg flex items-center gap-2 hover:bg-blue-700 transition-colors"
+            onClick={() => setShowPendingModal(true)}
+            className="flex items-center gap-2 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded-lg font-medium hover:bg-yellow-200 transition"
           >
-            <Plus className="w-4 h-4" /> Tambah Mobil
+            🔔 Ada {pendingBookings.length} booking belum di-ACC
           </button>
         </div>
       )}
 
       {/* Kalender */}
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto" ref={calendarRef}>
         <table className="w-full border-collapse">
           <thead>
             <tr>
@@ -191,14 +248,16 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
                   </div>
                 </td>
                 {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
-                  const dayBookings = getBookingForCarAndDate(car.id, day);
                   const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                  const dayBookings = getBookingForCarAndDate(car.id, day);
+                  const isHighlighted = highlightedDate === dateStr;
 
                   return (
                     <td
                       key={day}
-                      className={`border border-gray-300 p-1 align-top ${
-                        isToday(day) ? 'bg-blue-50' : ''
+                      id={`cell-${dateStr}`}
+                      className={`border border-gray-300 p-1 align-top transition-all duration-300 ${
+                        isHighlighted ? 'bg-blue-200 ring-2 ring-blue-500' : ''
                       }`}
                     >
                       {dayBookings.length > 0 ? (
@@ -236,14 +295,7 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
         </table>
       </div>
 
-      {/* Pesan jika belum ada mobil */}
-      {cars.length === 0 && (
-        <div className="text-center py-12 text-gray-500">
-          Belum ada mobil yang tersedia. Admin dapat menambahkan mobil.
-        </div>
-      )}
-
-      {/* Legend status */}
+      {/* Legend */}
       <div className="mt-6 flex gap-4 text-sm">
         <div className="flex items-center gap-2">
           <div className="w-4 h-4 bg-yellow-100 border border-yellow-300 rounded"></div>
@@ -258,6 +310,66 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
           <span className="text-gray-600">Completed</span>
         </div>
       </div>
+
+      {/* Modal Pending Bookings */}
+      {showPendingModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] overflow-y-auto">
+            <div className="p-6 border-b flex justify-between items-center">
+              <h3 className="text-xl font-bold text-gray-800">
+                Booking Belum Disetujui ({pendingBookings.length})
+              </h3>
+              <button
+                onClick={() => setShowPendingModal(false)}
+                className="text-gray-600 hover:text-red-600 text-lg"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6">
+              {pendingBookings.length > 0 ? (
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-gray-50 border-b">
+                      <th className="p-3 text-left">Mobil</th>
+                      <th className="p-3 text-left">Tanggal</th>
+                      <th className="p-3 text-left">Pemesan</th>
+                      <th className="p-3 text-left">Tujuan</th>
+                      <th className="p-3 text-left">Bulan</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingBookings.map((b) => {
+                      const bookingMonth = new Date(b.booking_date).toLocaleString('id-ID', { month: 'long' });
+                      return (
+                        <tr
+                          key={b.id}
+                          onClick={() => scrollToDate(b.booking_date)}
+                          className="border-b hover:bg-blue-50 cursor-pointer transition"
+                        >
+                          <td className="p-3">
+                            {b.car?.name || 'Tidak diketahui'} <br />
+                            <span className="text-xs text-gray-500">{b.car?.plate_number}</span>
+                          </td>
+                          <td className="p-3">{b.booking_date}</td>
+                          <td className="p-3">{b.user_profile?.full_name || 'Tidak diketahui'}</td>
+                          <td className="p-3">{b.destination}</td>
+                          <td className="p-3 capitalize">{bookingMonth}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="text-gray-500 text-center py-6">
+                  Tidak ada booking pending saat ini.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
