@@ -29,10 +29,11 @@ export function BookingModal({ isOpen, onClose, carId, date, onSuccess }: Bookin
     purpose: '',
     destination: '',
     driver_name: '',
+    guest_name: '', // ✅ tamu baru
     notes: '',
   });
 
-  // ✅ Ambil data mobil aktif saat modal dibuka
+  // 🔄 Muat data mobil aktif saat modal dibuka
   useEffect(() => {
     if (isOpen) {
       loadCars();
@@ -44,6 +45,7 @@ export function BookingModal({ isOpen, onClose, carId, date, onSuccess }: Bookin
         purpose: '',
         destination: '',
         driver_name: '',
+        guest_name: '',
         notes: '',
       });
     }
@@ -63,7 +65,7 @@ export function BookingModal({ isOpen, onClose, carId, date, onSuccess }: Bookin
     }
   };
 
-  // ✅ Simpan booking baru dan catat siapa yang membuat (created_by)
+  // 💾 Simpan booking baru
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
@@ -92,7 +94,7 @@ export function BookingModal({ isOpen, onClose, carId, date, onSuccess }: Bookin
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        {/* HEADER */}
+        {/* Header */}
         <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between">
           <h2 className="text-2xl font-bold text-gray-800">Buat Booking Baru</h2>
           <button
@@ -103,7 +105,7 @@ export function BookingModal({ isOpen, onClose, carId, date, onSuccess }: Bookin
           </button>
         </div>
 
-        {/* FORM */}
+        {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
           {/* Pilih Mobil */}
           <div>
@@ -141,7 +143,7 @@ export function BookingModal({ isOpen, onClose, carId, date, onSuccess }: Bookin
             />
           </div>
 
-          {/* Jam Mulai dan Selesai */}
+          {/* Jam Mulai & Jam Selesai */}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -214,6 +216,21 @@ export function BookingModal({ isOpen, onClose, carId, date, onSuccess }: Bookin
               value={formData.driver_name}
               onChange={(e) => setFormData({ ...formData, driver_name: e.target.value })}
               placeholder="Kosongkan jika belum ditentukan"
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+
+          {/* Nama Tamu */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              <User className="w-4 h-4 inline mr-2" />
+              Nama Tamu / Penumpang (Opsional)
+            </label>
+            <input
+              type="text"
+              value={formData.guest_name}
+              onChange={(e) => setFormData({ ...formData, guest_name: e.target.value })}
+              placeholder="Masukkan nama tamu atau penerima layanan"
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>

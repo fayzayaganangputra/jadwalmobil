@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, CheckCircle, XCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -19,6 +19,7 @@ interface Booking {
   destination: string;
   status: string;
   user_id: string;
+  guest_name?: string;
   user_profile?: { full_name: string };
   created_by_profile?: { full_name: string };
   car?: { name: string; plate_number: string };
@@ -35,6 +36,7 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
   const [cars, setCars] = useState<Car[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [pendingBookings, setPendingBookings] = useState<Booking[]>([]);
+  const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [showPendingModal, setShowPendingModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [highlightedDate, setHighlightedDate] = useState<string | null>(null);
@@ -54,31 +56,29 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
     loadData();
   }, [currentDate]);
 
-  // Realtime listener: update admin ketika ada booking pending baru
+  // ✅ Realtime notification untuk admin
   useEffect(() => {
-    if (profile?.role === 'admin') {
-      const channel = supabase
-        .channel('booking_notifications')
-        .on(
-          'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'bookings' },
-          (payload) => {
-            const newBooking = payload.new;
-            if (newBooking.status === 'pending') {
-              alert(
-                `📅 Booking baru dibuat oleh User ID: ${newBooking.user_id}\nTanggal: ${newBooking.booking_date}`
-              );
-              loadPendingBookings();
-              loadBookings();
-            }
-          }
-        )
-        .subscribe();
+    if (profile?.role !== 'admin') return;
 
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
+    const channel = supabase
+      .channel('booking_notifications')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'bookings' },
+        (payload) => {
+          const newBooking = payload.new as Booking;
+          if (newBooking.status === 'pending') {
+            alert(`📅 Booking baru dibuat oleh User ID: ${newBooking.user_id} untuk tanggal ${newBooking.booking_date}`);
+            loadPendingBookings();
+            loadBookings();
+          }
+        }
+      );
+
+    channel.subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [profile]);
 
   const loadData = async () => {
@@ -88,21 +88,14 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
   };
 
   const loadCars = async () => {
-    const { data, error } = await supabase
-      .from('cars')
-      .select('*')
-      .eq('is_active', true)
-      .order('name');
-
-    if (error) console.error('Error loading cars:', error);
-    else setCars(data || []);
+    const { data } = await supabase.from('cars').select('*').eq('is_active', true).order('name');
+    setCars(data || []);
   };
 
   const loadBookings = async () => {
     const startDate = `${year}-${String(month + 1).padStart(2, '0')}-01`;
     const endDate = `${year}-${String(month + 1).padStart(2, '0')}-${daysInMonth}`;
-
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('bookings')
       .select(`
         *,
@@ -113,24 +106,37 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
       .gte('booking_date', startDate)
       .lte('booking_date', endDate)
       .not('status', 'in', '("cancelled","rejected")');
-
-    if (error) console.error('Error loading bookings:', error);
-    else setBookings(data || []);
+    setBookings(data || []);
   };
 
   const loadPendingBookings = async () => {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from('bookings')
       .select(`
         *,
         user_profile:user_id(full_name),
+        created_by_profile:created_by(full_name),
         car:car_id(name, plate_number)
       `)
       .eq('status', 'pending')
       .order('booking_date', { ascending: true });
+    setPendingBookings(data || []);
+  };
 
-    if (error) console.error('Error loading pending bookings:', error);
-    else setPendingBookings(data || []);
+  const approveBooking = async (booking: Booking) => {
+    await supabase.from('bookings').update({ status: 'approved' }).eq('id', booking.id);
+    alert('✅ Booking disetujui');
+    setSelectedBooking(null);
+    loadBookings();
+    loadPendingBookings();
+  };
+
+  const rejectBooking = async (booking: Booking) => {
+    await supabase.from('bookings').update({ status: 'rejected' }).eq('id', booking.id);
+    alert('❌ Booking ditolak');
+    setSelectedBooking(null);
+    loadBookings();
+    loadPendingBookings();
   };
 
   const getBookingForCarAndDate = (carId: string, day: number) => {
@@ -138,8 +144,15 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
     return bookings.filter((b) => b.car_id === carId && b.booking_date === dateStr);
   };
 
-  const previousMonth = () => setCurrentDate(new Date(year, month - 1, 1));
-  const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+  const scrollToDate = (dateStr: string) => {
+    setShowPendingModal(false);
+    setHighlightedDate(dateStr);
+    setTimeout(() => {
+      const target = document.getElementById(`cell-${dateStr}`);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      setTimeout(() => setHighlightedDate(null), 3000);
+    }, 300);
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -159,81 +172,47 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
     return today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
   };
 
-  // 🧭 Scroll dan highlight ke tanggal yang diklik dari daftar pending
-  const scrollToDate = (dateStr: string) => {
-    setShowPendingModal(false);
-    setHighlightedDate(dateStr);
-
-    setTimeout(() => {
-      const target = document.getElementById(`cell-${dateStr}`);
-      if (target && calendarRef.current) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-      }
-
-      // hilangkan highlight setelah 3 detik
-      setTimeout(() => setHighlightedDate(null), 3000);
-    }, 300);
-  };
-
-  if (loading) {
+  if (loading)
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
       </div>
     );
-  }
 
   return (
     <div className="bg-white rounded-xl shadow-lg p-6">
-      {/* Header Kalender */}
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-800">
-          {monthNames[month]} {year}
-        </h2>
+      {/* Header */}
+      <div className="flex justify-between mb-4">
+        <h2 className="text-2xl font-bold text-gray-800">{monthNames[month]} {year}</h2>
         <div className="flex gap-2">
-          <button
-            onClick={previousMonth}
-            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5" />
+          <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-2 hover:bg-gray-100 rounded-lg">
+            <ChevronLeft />
           </button>
-          <button
-            onClick={nextMonth}
-            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-          >
-            <ChevronRight className="w-5 h-5" />
+          <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-2 hover:bg-gray-100 rounded-lg">
+            <ChevronRight />
           </button>
         </div>
       </div>
 
-      {/* Tombol Pending Booking */}
+      {/* Pending Notification */}
       {profile?.role === 'admin' && (
-        <div className="flex items-center justify-between mb-4">
-          <button
-            onClick={() => setShowPendingModal(true)}
-            className="flex items-center gap-2 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded-lg font-medium hover:bg-yellow-200 transition"
-          >
-            🔔 Ada {pendingBookings.length} booking belum di-ACC
-          </button>
-        </div>
+        <button
+          onClick={() => setShowPendingModal(true)}
+          className="mb-4 bg-yellow-100 border border-yellow-300 text-yellow-800 px-4 py-2 rounded-lg font-medium hover:bg-yellow-200 transition"
+        >
+          🔔 Ada {pendingBookings.length} booking belum di-ACC
+        </button>
       )}
 
-      {/* Kalender */}
+      {/* Calendar Table */}
       <div className="overflow-x-auto" ref={calendarRef}>
         <table className="w-full border-collapse">
           <thead>
             <tr>
-              <th className="border border-gray-300 bg-gray-50 p-3 text-left font-semibold text-gray-700 sticky left-0 z-10 min-w-[200px]">
-                Mobil
-              </th>
-              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => (
-                <th
-                  key={day}
-                  className={`border border-gray-300 bg-gray-50 p-2 text-center font-semibold min-w-[120px] ${
-                    isToday(day) ? 'bg-blue-50 text-blue-700' : 'text-gray-700'
-                  }`}
-                >
-                  {day}
+              <th className="sticky left-0 bg-gray-50 border border-gray-300 p-3 text-left">Mobil</th>
+              {Array.from({ length: daysInMonth }, (_, i) => (
+                <th key={i} className={`border p-2 ${isToday(i + 1) ? 'bg-blue-50 text-blue-700' : 'bg-gray-50 text-gray-600'}`}>
+                  {i + 1}
                 </th>
               ))}
             </tr>
@@ -241,49 +220,35 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
           <tbody>
             {cars.map((car) => (
               <tr key={car.id}>
-                <td className="border border-gray-300 p-3 font-medium text-gray-800 bg-white sticky left-0 z-10">
-                  <div>
-                    <div className="font-semibold">{car.name}</div>
-                    <div className="text-sm text-gray-500">{car.plate_number}</div>
-                  </div>
+                <td className="sticky left-0 bg-white border p-3 font-medium text-gray-800">
+                  <div>{car.name}</div>
+                  <div className="text-sm text-gray-500">{car.plate_number}</div>
                 </td>
-                {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((day) => {
+                {Array.from({ length: daysInMonth }, (_, i) => {
+                  const day = i + 1;
                   const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                   const dayBookings = getBookingForCarAndDate(car.id, day);
                   const isHighlighted = highlightedDate === dateStr;
-
                   return (
-                    <td
-                      key={day}
-                      id={`cell-${dateStr}`}
-                      className={`border border-gray-300 p-1 align-top transition-all duration-300 ${
-                        isHighlighted ? 'bg-blue-200 ring-2 ring-blue-500' : ''
-                      }`}
-                    >
-                      {dayBookings.length > 0 ? (
-                        <div className="space-y-1">
-                          {dayBookings.map((booking) => (
-                            <button
-                              key={booking.id}
-                              onClick={() => onViewBooking(booking)}
-                              className={`w-full text-left p-2 rounded border text-xs hover:shadow-md transition-shadow ${getStatusColor(booking.status)}`}
-                            >
-                              <div className="font-semibold truncate">{booking.purpose}</div>
-                              <div className="text-xs opacity-75">
-                                {booking.start_time.substring(0, 5)} - {booking.end_time.substring(0, 5)}
-                              </div>
-                              <div className="text-[10px] text-gray-500 mt-1">
-                                Oleh: {booking.created_by_profile?.full_name || 'Tidak diketahui'}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
+                    <td key={day} id={`cell-${dateStr}`} className={`border p-1 ${isHighlighted ? 'bg-blue-200' : ''}`}>
+                      {dayBookings.map((b) => (
+                        <button
+                          key={b.id}
+                          onClick={() => onViewBooking(b)}
+                          className={`block w-full text-left text-xs rounded p-2 border mb-1 ${getStatusColor(b.status)}`}
+                        >
+                          <div className="font-semibold">{b.purpose}</div>
+                          <div>{b.start_time.slice(0, 5)}-{b.end_time.slice(0, 5)}</div>
+                          <div className="text-[10px] text-gray-600">Oleh: {b.created_by_profile?.full_name}</div>
+                          {b.guest_name && <div className="text-[10px] text-gray-600">Tamu: {b.guest_name}</div>}
+                        </button>
+                      ))}
+                      {dayBookings.length === 0 && (
                         <button
                           onClick={() => onCreateBooking(car.id, dateStr)}
-                          className="w-full h-full min-h-[60px] flex items-center justify-center text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                          className="w-full text-gray-400 hover:text-blue-600"
                         >
-                          <Plus className="w-4 h-4" />
+                          <Plus size={14} />
                         </button>
                       )}
                     </td>
@@ -295,78 +260,65 @@ export function CalendarView({ onCreateBooking, onViewBooking }: CalendarViewPro
         </table>
       </div>
 
-      {/* Legend */}
-      <div className="mt-6 flex gap-4 text-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 bg-yellow-100 border border-yellow-300 rounded"></div>
-          <span className="text-gray-600">Pending</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 bg-green-100 border border-green-300 rounded"></div>
-          <span className="text-gray-600">Approved</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 bg-blue-100 border border-blue-300 rounded"></div>
-          <span className="text-gray-600">Completed</span>
-        </div>
-      </div>
-
-      {/* Modal Pending Bookings */}
+      {/* Pending Modal */}
       {showPendingModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl">
+            <div className="flex justify-between items-center border-b p-4">
+              <h3 className="font-bold text-lg">Booking Belum Disetujui ({pendingBookings.length})</h3>
+              <button onClick={() => setShowPendingModal(false)}>✕</button>
+            </div>
+
+            <div className="p-4 overflow-y-auto max-h-[70vh]">
+              {pendingBookings.map((b) => (
+                <div
+                  key={b.id}
+                  className="border rounded-lg p-3 mb-3 hover:bg-blue-50 transition cursor-pointer"
+                  onClick={() => setSelectedBooking(b)}
+                >
+                  <div className="font-semibold">{b.purpose}</div>
+                  <div className="text-sm text-gray-600">
+                    {b.booking_date} | {b.car?.name} ({b.car?.plate_number})
+                  </div>
+                  <div className="text-sm">Oleh: {b.user_profile?.full_name}</div>
+                  {b.guest_name && <div className="text-sm text-gray-600">Tamu: {b.guest_name}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Booking Detail Modal */}
+      {selectedBooking && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] overflow-y-auto">
-            <div className="p-6 border-b flex justify-between items-center">
-              <h3 className="text-xl font-bold text-gray-800">
-                Booking Belum Disetujui ({pendingBookings.length})
-              </h3>
+          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6">
+            <h3 className="text-xl font-bold mb-4">Detail Booking</h3>
+            <p><strong>Mobil:</strong> {selectedBooking.car?.name} ({selectedBooking.car?.plate_number})</p>
+            <p><strong>Tanggal:</strong> {selectedBooking.booking_date}</p>
+            <p><strong>Jam:</strong> {selectedBooking.start_time} - {selectedBooking.end_time}</p>
+            <p><strong>Oleh:</strong> {selectedBooking.created_by_profile?.full_name}</p>
+            {selectedBooking.guest_name && <p><strong>Tamu:</strong> {selectedBooking.guest_name}</p>}
+            <p><strong>Tujuan:</strong> {selectedBooking.destination}</p>
+            <p><strong>Keperluan:</strong> {selectedBooking.purpose}</p>
+
+            <div className="flex gap-3 mt-6">
               <button
-                onClick={() => setShowPendingModal(false)}
-                className="text-gray-600 hover:text-red-600 text-lg"
+                onClick={() => approveBooking(selectedBooking)}
+                className="flex-1 bg-green-600 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 hover:bg-green-700"
               >
-                ✕
+                <CheckCircle size={16} /> Setujui
+              </button>
+              <button
+                onClick={() => rejectBooking(selectedBooking)}
+                className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 hover:bg-red-700"
+              >
+                <XCircle size={16} /> Tolak
               </button>
             </div>
-
-            <div className="p-6">
-              {pendingBookings.length > 0 ? (
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr className="bg-gray-50 border-b">
-                      <th className="p-3 text-left">Mobil</th>
-                      <th className="p-3 text-left">Tanggal</th>
-                      <th className="p-3 text-left">Pemesan</th>
-                      <th className="p-3 text-left">Tujuan</th>
-                      <th className="p-3 text-left">Bulan</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pendingBookings.map((b) => {
-                      const bookingMonth = new Date(b.booking_date).toLocaleString('id-ID', { month: 'long' });
-                      return (
-                        <tr
-                          key={b.id}
-                          onClick={() => scrollToDate(b.booking_date)}
-                          className="border-b hover:bg-blue-50 cursor-pointer transition"
-                        >
-                          <td className="p-3">
-                            {b.car?.name || 'Tidak diketahui'} <br />
-                            <span className="text-xs text-gray-500">{b.car?.plate_number}</span>
-                          </td>
-                          <td className="p-3">{b.booking_date}</td>
-                          <td className="p-3">{b.user_profile?.full_name || 'Tidak diketahui'}</td>
-                          <td className="p-3">{b.destination}</td>
-                          <td className="p-3 capitalize">{bookingMonth}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              ) : (
-                <p className="text-gray-500 text-center py-6">
-                  Tidak ada booking pending saat ini.
-                </p>
-              )}
-            </div>
+            <button onClick={() => setSelectedBooking(null)} className="mt-4 text-gray-500 w-full">
+              Tutup
+            </button>
           </div>
         </div>
       )}
